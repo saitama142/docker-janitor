@@ -123,6 +123,77 @@ install_packages() {
     print_success "Package installation completed."
 }
 
+install_docker() {
+    print_info "Setting up Docker..."
+    
+    # Check if docker is already installed and working
+    if command -v docker >/dev/null 2>&1 && docker --version >/dev/null 2>&1; then
+        print_info "Docker is already installed."
+        
+        # Check if Docker daemon is accessible
+        if docker info >/dev/null 2>&1; then
+            print_success "Docker is installed and working correctly."
+            return 0
+        else
+            print_info "Docker is installed but daemon may not be running. Will attempt to start it."
+        fi
+    else
+        print_info "Docker not found. Installing Docker..."
+        
+        # Try different Docker installation methods
+        case $1 in
+            "apt")
+                # Try docker.io first (simple method)
+                if apt install -y docker.io >/dev/null 2>&1; then
+                    print_success "Docker installed successfully with docker.io package."
+                else
+                    print_info "docker.io package failed. Trying Docker CE installation..."
+                    
+                    # Install Docker CE if docker.io fails
+                    apt update >/dev/null 2>&1
+                    apt install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
+                    
+                    # Add Docker's official GPG key
+                    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg 2>/dev/null
+                    
+                    # Add Docker repository
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+                    
+                    # Install Docker CE
+                    apt update >/dev/null 2>&1
+                    if apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin; then
+                        print_success "Docker CE installed successfully."
+                    else
+                        print_error "Failed to install Docker. Please install Docker manually and re-run this installer."
+                    fi
+                fi
+                ;;
+            "yum"|"dnf")
+                $1 install -y docker >/dev/null 2>&1 || print_error "Failed to install Docker with $1."
+                ;;
+            "pacman")
+                pacman -S --noconfirm docker >/dev/null 2>&1 || print_error "Failed to install Docker with pacman."
+                ;;
+        esac
+    fi
+    
+    # Start and enable Docker service
+    print_info "Starting and enabling Docker service..."
+    systemctl start docker >/dev/null 2>&1 || print_info "Docker may already be running."
+    systemctl enable docker >/dev/null 2>&1 || print_info "Docker may already be enabled."
+    
+    # Give Docker a moment to start
+    sleep 3
+    
+    # Final verification
+    if docker info >/dev/null 2>&1; then
+        print_success "Docker is now running and accessible."
+    else
+        print_info "Docker service started but may need a moment to become ready."
+        print_info "You can verify Docker is working later with: sudo docker info"
+    fi
+}
+
 # --- Main Installation Logic ---
 main() {
     # 1. Check for root privileges
@@ -162,40 +233,28 @@ main() {
     
     case $PKG_MANAGER in
         "apt")
-            PACKAGES="python3 python3-pip python3-venv docker.io"
+            PACKAGES="python3 python3-pip python3-venv"
             ;;
         "yum"|"dnf")
-            PACKAGES="python3 python3-pip docker"
+            PACKAGES="python3 python3-pip"
             ;;
         "pacman")
-            PACKAGES="python python-pip docker"
+            PACKAGES="python python-pip"
             ;;
         *)
-            print_error "Unsupported package manager: $PKG_MANAGER. Please install python3, python3-pip, python3-venv, and docker manually."
+            print_error "Unsupported package manager: $PKG_MANAGER. Please install python3, python3-pip, python3-venv manually."
             ;;
     esac
     
-    # Install packages
+    # Install Python packages first
     install_packages $PKG_MANAGER $PACKAGES
     
-    # Verify installations
-    print_info "Verifying installations..."
-    if ! command -v python3 >/dev/null 2>&1; then
-        print_error "Python3 installation failed or not found in PATH."
-    fi
-    
-    if ! command -v pip3 >/dev/null 2>&1; then
-        print_error "pip3 installation failed or not found in PATH."
-    fi
+    # Install Docker separately (handles conflicts better)
+    install_docker $PKG_MANAGER
     
     print_info "System packages installed successfully."
 
-    # 3. Start and enable Docker service
-    print_info "Starting Docker service..."
-    systemctl start docker >/dev/null 2>&1 || print_info "Docker may already be running."
-    systemctl enable docker >/dev/null 2>&1 || print_info "Docker may already be enabled."
-    
-    # 4. Create docker-janitor user if it doesn't exist
+    # 3. Create docker-janitor user if it doesn't exist
     if ! id "docker-janitor" &>/dev/null; then
         print_info "Creating docker-janitor user..."
         useradd -r -s /bin/false docker-janitor || print_error "Failed to create docker-janitor user."
@@ -204,12 +263,6 @@ main() {
         print_info "docker-janitor user already exists."
         # Ensure user is in docker group
         usermod -a -G docker docker-janitor || print_error "Failed to add docker-janitor to docker group."
-    fi
-
-    # 5. Verify Docker is accessible
-    sleep 2  # Give Docker a moment to start
-    if ! timeout 10 docker info >/dev/null 2>&1; then
-        print_info "Docker daemon may still be starting. Installation will continue..."
     fi
 
     print_info "All dependencies installed and configured."
