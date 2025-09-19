@@ -300,7 +300,6 @@ main() {
     # 6. Copy source files
     print_info "Copying source files to $SRC_DIR..."
     cp -r src/* $SRC_DIR/ || print_error "Failed to copy source files."
-    cp tui.css $SRC_DIR/ || print_error "Failed to copy CSS file."
 
     # 7. Create default configuration
     if [ ! -f "$CONFIG_FILE" ]; then
