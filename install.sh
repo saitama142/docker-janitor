@@ -27,6 +27,45 @@ print_error() {
     exit 1
 }
 
+detect_package_manager() {
+    if command -v apt >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    else
+        echo "unknown"
+    fi
+}
+
+install_packages() {
+    local pkg_manager=$1
+    shift
+    local packages="$@"
+    
+    case $pkg_manager in
+        "apt")
+            apt update >/dev/null 2>&1
+            apt install -y $packages >/dev/null 2>&1
+            ;;
+        "yum")
+            yum install -y $packages >/dev/null 2>&1
+            ;;
+        "dnf")
+            dnf install -y $packages >/dev/null 2>&1
+            ;;
+        "pacman")
+            pacman -Sy --noconfirm $packages >/dev/null 2>&1
+            ;;
+        *)
+            print_error "Unsupported package manager. Please install dependencies manually: $packages"
+            ;;
+    esac
+}
+
 # --- Main Installation Logic ---
 main() {
     # 1. Check for root privileges
@@ -34,18 +73,73 @@ main() {
         print_error "This script must be run with sudo or as root."
     fi
 
-    print_info "Starting docker-janitor installation..."
-
-    # 2. Check for dependencies (python, pip, docker)
-    command -v python3 >/dev/null 2>&1 || print_error "Python 3 is not installed. Please install it first."
-    command -v pip3 >/dev/null 2>&1 || print_error "pip3 is not installed. Please install it first."
-    command -v docker >/dev/null 2>&1 || print_error "Docker is not installed. Please install it first."
+    echo "🐳 Docker Janitor Installer"
+    echo "=========================="
+    echo "This installer will:"
+    echo "• Install system dependencies (Python, Docker, etc.)"
+    echo "• Create a dedicated user for the service"
+    echo "• Set up the application and systemd service"
+    echo "• Configure proper permissions and logging"
+    echo ""
     
-    if ! docker info >/dev/null 2>&1; then
-        print_error "Cannot connect to Docker daemon. Is the Docker daemon running and do you have permissions?"
+    read -p "Continue with installation? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo "Installation cancelled."
+        exit 0
     fi
 
-    print_info "All dependencies found."
+    print_info "Starting docker-janitor installation..."
+
+    # 2. Detect package manager and install dependencies
+    PKG_MANAGER=$(detect_package_manager)
+    print_info "Detected package manager: $PKG_MANAGER"
+    
+    print_info "Installing system dependencies..."
+    
+    case $PKG_MANAGER in
+        "apt")
+            PACKAGES="python3 python3-pip python3-venv docker.io"
+            ;;
+        "yum"|"dnf")
+            PACKAGES="python3 python3-pip docker"
+            ;;
+        "pacman")
+            PACKAGES="python python-pip docker"
+            ;;
+        *)
+            print_error "Unsupported package manager: $PKG_MANAGER. Please install python3, python3-pip, python3-venv, and docker manually."
+            ;;
+    esac
+    
+    # Install packages
+    install_packages $PKG_MANAGER $PACKAGES || print_error "Failed to install required packages."
+    
+    print_info "System packages installed successfully."
+
+    # 3. Start and enable Docker service
+    print_info "Starting Docker service..."
+    systemctl start docker >/dev/null 2>&1 || print_info "Docker may already be running."
+    systemctl enable docker >/dev/null 2>&1 || print_info "Docker may already be enabled."
+    
+    # 4. Create docker-janitor user if it doesn't exist
+    if ! id "docker-janitor" &>/dev/null; then
+        print_info "Creating docker-janitor user..."
+        useradd -r -s /bin/false docker-janitor || print_error "Failed to create docker-janitor user."
+        usermod -a -G docker docker-janitor || print_error "Failed to add docker-janitor to docker group."
+    else
+        print_info "docker-janitor user already exists."
+        # Ensure user is in docker group
+        usermod -a -G docker docker-janitor || print_error "Failed to add docker-janitor to docker group."
+    fi
+
+    # 5. Verify Docker is accessible
+    sleep 2  # Give Docker a moment to start
+    if ! timeout 10 docker info >/dev/null 2>&1; then
+        print_info "Docker daemon may still be starting. Installation will continue..."
+    fi
+
+    print_info "All dependencies installed and configured."
 
     # 3. Create docker-janitor user if it doesn't exist
     if ! id "docker-janitor" &>/dev/null; then
@@ -65,8 +159,8 @@ main() {
     mkdir -p /var/lib/docker-janitor || print_error "Failed to create data directory."
     
     # Set ownership for directories that the service user needs access to
-    chown -R docker-janitor:docker $CONFIG_DIR || print_error "Failed to set ownership of config directory."
-    chown -R docker-janitor:docker /var/lib/docker-janitor || print_error "Failed to set ownership of data directory."
+    chown -R docker-janitor:docker $CONFIG_DIR 2>/dev/null || print_info "Will set ownership after user creation."
+    chown -R docker-janitor:docker /var/lib/docker-janitor 2>/dev/null || print_info "Will set ownership after user creation."
 
     # 4. Create Python virtual environment
     print_info "Creating Python virtual environment in $VENV_DIR..."
@@ -95,7 +189,7 @@ main() {
     "backup_enabled": true,
     "backup_file": "/var/lib/docker-janitor/backup.json"
 }' > $CONFIG_FILE || print_error "Failed to create config file."
-        chown docker-janitor:docker $CONFIG_FILE || print_error "Failed to set ownership of config file."
+        chown docker-janitor:docker $CONFIG_FILE 2>/dev/null || print_info "Will set ownership after user creation."
     else
         print_info "Configuration file already exists. Skipping creation."
     fi
@@ -116,11 +210,15 @@ main() {
     chmod +x "$EXECUTABLE_PATH"
 
     # 11. Set up log file permissions
-    touch /var/log/docker-janitor.log || print_info "Could not create log file in /var/log (will use fallback location)"
+    touch /var/log/docker-janitor.log 2>/dev/null || print_info "Could not create log file in /var/log (will use fallback location)"
     if [ -f /var/log/docker-janitor.log ]; then
-        chown docker-janitor:docker /var/log/docker-janitor.log
-        chmod 644 /var/log/docker-janitor.log
+        chown docker-janitor:docker /var/log/docker-janitor.log 2>/dev/null
+        chmod 644 /var/log/docker-janitor.log 2>/dev/null
     fi
+    
+    # Final ownership fix for all directories
+    chown -R docker-janitor:docker $CONFIG_DIR 2>/dev/null || print_info "Ownership will be set on first run."
+    chown -R docker-janitor:docker /var/lib/docker-janitor 2>/dev/null || print_info "Ownership will be set on first run."
 
     systemctl daemon-reload || print_error "Failed to reload systemd daemon."
     
@@ -128,7 +226,17 @@ main() {
 
     # 11. Final instructions
     print_success "Installation complete!"
-    echo "You can now run the application using the command: docker-janitor"
+    
+    # Final verification
+    print_info "Performing final verification..."
+    if command -v docker-janitor >/dev/null 2>&1; then
+        print_success "docker-janitor command is available."
+    else
+        print_error "docker-janitor command not found. Installation may have failed."
+    fi
+    
+    echo ""
+    print_success "🎉 Docker Janitor has been successfully installed!"
     echo ""
     echo "Available commands:"
     echo "  docker-janitor          # Launch interactive TUI"
@@ -139,13 +247,26 @@ main() {
     read -p "Do you want to enable and start the background service now? [y/N] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Enabling and starting docker-janitor service..."
         systemctl enable $SERVICE_FILE_NAME >/dev/null 2>&1
-        systemctl start $SERVICE_FILE_NAME || print_error "Failed to start the service."
-        print_success "docker-janitor service has been enabled and started."
+        systemctl start $SERVICE_FILE_NAME
+        
+        # Check service status
+        sleep 2
+        if systemctl is-active --quiet $SERVICE_FILE_NAME; then
+            print_success "docker-janitor service is running successfully!"
+        else
+            print_error "Service failed to start. Check logs with: sudo journalctl -u docker-janitor -f"
+        fi
+        
         echo "Check service status with: sudo systemctl status docker-janitor"
     else
         print_info "You can enable the service later by running: sudo systemctl enable --now $SERVICE_FILE_NAME"
     fi
+    
+    echo ""
+    print_info "🚀 You can now run 'docker-janitor' to start the interactive interface!"
+    print_info "📚 For help and documentation, see the README.md file."
 }
 
 main "$@"
