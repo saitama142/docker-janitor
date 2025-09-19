@@ -347,6 +347,5 @@ main() {
     echo "• To view logs: sudo journalctl -u docker-janitor -f"
     echo "• To restart service: sudo systemctl restart docker-janitor"
 }
-}
 
 main "$@"
