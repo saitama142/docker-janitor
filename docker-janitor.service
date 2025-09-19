@@ -1,0 +1,13 @@
+[Unit]
+Description=Docker Janitor Service
+After=docker.service
+
+[Service]
+ExecStart=/opt/docker-janitor/launcher.sh --daemon
+Restart=always
+User=root
+Group=root
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
