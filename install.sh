@@ -361,6 +361,15 @@ main() {
         print_error "docker-janitor command not found. Installation may have failed."
     fi
     
+    # Add current user to docker group if not already added
+    CURRENT_USER=${SUDO_USER:-$USER}
+    if [ "$CURRENT_USER" != "root" ] && ! groups "$CURRENT_USER" | grep -q docker; then
+        print_info "Adding user '$CURRENT_USER' to docker group..."
+        usermod -a -G docker "$CURRENT_USER" || print_info "Failed to add user to docker group. You may need to do this manually."
+        print_info "Note: You may need to log out and log back in for docker group changes to take effect."
+        print_info "Or run: newgrp docker"
+    fi
+    
     echo ""
     print_success "🎉 Docker Janitor has been successfully installed!"
     echo ""

@@ -155,10 +155,34 @@ def get_unused_images(client, age_threshold_days: int, exclusion_patterns=None):
                 logger.info(f"Excluding image {image.short_id} due to exclusion rules")
                 continue
                 
-            # Docker API returns created time in ISO 8601 format with nanoseconds
-            # We need to parse it and make it timezone-aware (UTC)
-            created_time_str = image.attrs['Created'].split('.')[0] + 'Z'
-            created_time = datetime.fromisoformat(created_time_str.replace('Z', '+00:00'))
+            # Docker API returns created time in ISO 8601 format
+            # Handle various timestamp formats from Docker API
+            created_time_str = image.attrs['Created']
+            try:
+                # Try parsing as-is first (most common case)
+                if created_time_str.endswith('Z'):
+                    # Replace Z with +00:00 for proper ISO format
+                    created_time_str = created_time_str.replace('Z', '+00:00')
+                elif '+00:00' in created_time_str and created_time_str.count('+00:00') > 1:
+                    # Fix double timezone issue
+                    created_time_str = created_time_str.replace('+00:00+00:00', '+00:00')
+                
+                # Remove nanoseconds if present (keep only microseconds)
+                if '.' in created_time_str:
+                    date_part, time_part = created_time_str.split('.')
+                    if '+' in time_part:
+                        time_microseconds, tz_part = time_part.split('+', 1)
+                        time_microseconds = time_microseconds[:6]  # Keep only 6 digits (microseconds)
+                        created_time_str = f"{date_part}.{time_microseconds}+{tz_part}"
+                    elif 'Z' in time_part:
+                        time_microseconds = time_part.replace('Z', '')[:6]
+                        created_time_str = f"{date_part}.{time_microseconds}+00:00"
+                
+                created_time = datetime.fromisoformat(created_time_str)
+            except ValueError as e:
+                logger.warning(f"Failed to parse timestamp '{image.attrs['Created']}' for image {image.short_id}: {e}")
+                # Fallback: assume image is new if we can't parse the date
+                continue
 
             if created_time < threshold_date:
                 unused_images.append(image)
@@ -182,7 +206,15 @@ def cleanup_images(dry_run=None):
         client = docker.from_env()
         client.ping() # Verify connection
     except docker.errors.DockerException as e:
-        logger.error(f"Could not connect to Docker daemon: {e}")
+        error_msg = str(e)
+        if "Permission denied" in error_msg:
+            logger.error("Could not connect to Docker daemon: Permission denied. Please ensure the user is in the 'docker' group.")
+            logger.error("To fix this, run: sudo usermod -a -G docker $USER && newgrp docker")
+        else:
+            logger.error(f"Could not connect to Docker daemon: {e}")
+        return
+    except Exception as e:
+        logger.error(f"Unexpected error connecting to Docker: {e}")
         return
 
     images_to_delete = get_unused_images(client, age_threshold, exclusion_patterns)
