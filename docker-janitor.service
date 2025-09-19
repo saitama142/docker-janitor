@@ -1,13 +1,18 @@
 [Unit]
 Description=Docker Janitor Service
 After=docker.service
+Requires=docker.service
 
 [Service]
 ExecStart=/opt/docker-janitor/launcher.sh --daemon
 Restart=always
-User=root
-Group=root
+User=docker-janitor
+Group=docker
 Environment="PYTHONUNBUFFERED=1"
+# Create log directory with proper permissions
+ExecStartPre=/bin/mkdir -p /var/log
+ExecStartPre=/bin/mkdir -p /var/lib/docker-janitor
+ExecStartPre=/bin/chown docker-janitor:docker /var/lib/docker-janitor
 
 [Install]
 WantedBy=multi-user.target

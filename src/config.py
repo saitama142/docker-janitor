@@ -8,6 +8,12 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_CONFIG = {
     "daemon_sleep_interval_seconds": 86400,  # 24 hours
     "image_age_threshold_days": 30,
+    "dry_run_mode": False,
+    "excluded_image_patterns": [],  # List of patterns to exclude from deletion
+    "log_level": "INFO",
+    "log_file": "/var/log/docker-janitor.log",
+    "backup_enabled": True,
+    "backup_file": "/var/lib/docker-janitor/backup.json"
 }
 
 def load_config() -> dict:

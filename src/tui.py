@@ -5,18 +5,43 @@ from textual.binding import Binding
 from textual.reactive import reactive
 import subprocess
 import docker
+import os
+import json
+from pathlib import Path
 
 from . import config
 from . import daemon
 
 LOG_FILE = "/var/log/docker-janitor.log"
 
+def get_log_file():
+    """Get the log file path with fallback options."""
+    primary_log = "/var/log/docker-janitor.log"
+    fallback_log = os.path.expanduser("~/.docker-janitor.log")
+    
+    if os.path.exists(primary_log):
+        return primary_log
+    elif os.path.exists(fallback_log):
+        return fallback_log
+    else:
+        return primary_log  # Default, even if it doesn't exist
+
 class DockerJanitorApp(App):
     """The main Textual application for Docker Janitor."""
 
     TITLE = "Docker Janitor"
     SUB_TITLE = "Your smart Docker image cleaner"
-    CSS_PATH = "tui.css"
+    
+    @property
+    def CSS_PATH(self):
+        """Dynamically resolve CSS path."""
+        # Try to find tui.css in the same directory as this file
+        current_dir = Path(__file__).parent
+        css_file = current_dir / "tui.css"
+        if css_file.exists():
+            return css_file
+        # Fallback to relative path
+        return "tui.css"
 
     BINDINGS = [
         Binding("q", "quit", "Quit", priority=True),
@@ -52,6 +77,14 @@ class DockerJanitorApp(App):
                         Input(id="age_input", type="number"),
                     ),
                     Horizontal(
+                        Static("Dry Run Mode:", classes="label"),
+                        Input(id="dry_run_input", placeholder="true/false"),
+                    ),
+                    Horizontal(
+                        Static("Exclusion Patterns:", classes="label"),
+                        Input(id="exclusions_input", placeholder="pattern1,pattern2"),
+                    ),
+                    Horizontal(
                         Button("Save Settings", id="save_button", variant="primary"),
                         Button("Restart Daemon", id="restart_button", variant="default"),
                         classes="button_container"
@@ -62,7 +95,11 @@ class DockerJanitorApp(App):
             with TabPane("Manual Clean", id="manual_tab"):
                 yield Vertical(
                     Static("Manual Image Cleanup", classes="header"),
-                    Button("Scan for Unused Images", id="scan_button", variant="primary"),
+                    Horizontal(
+                        Button("Scan for Unused Images", id="scan_button", variant="primary"),
+                        Button("Dry Run Preview", id="dry_run_button", variant="default"),
+                        Button("View Backup", id="backup_button", variant="default"),
+                    ),
                     DataTable(id="image_table"),
                     Button("Delete Selected Images (0)", id="delete_button", variant="error", disabled=True),
                     Static(id="delete_status"),
@@ -99,23 +136,30 @@ class DockerJanitorApp(App):
         if not log_table.columns:
             log_table.add_columns("Timestamp", "Level", "Message")
         log_table.clear()
+        
+        log_file_path = get_log_file()
         try:
-            with open(LOG_FILE, "r") as f:
+            with open(log_file_path, "r") as f:
                 lines = f.readlines()
                 for line in lines[-10:]: # Show last 10 log entries
                     parts = line.strip().split(" - ")
                     if len(parts) == 3:
                         log_table.add_row(parts[0], parts[1], parts[2])
         except FileNotFoundError:
-            log_table.add_row("[bold red]Log file not found at /var/log/docker-janitor.log[/bold red]", "", "")
+            log_table.add_row(f"[bold red]Log file not found at {log_file_path}[/bold red]", "", "")
 
     def load_settings(self):
         """Loads settings into the input fields."""
         cfg = config.load_config()
         interval_hours = cfg.get("daemon_sleep_interval_seconds", 86400) / 3600
         age_days = cfg.get("image_age_threshold_days", 30)
+        dry_run = cfg.get("dry_run_mode", False)
+        exclusions = cfg.get("excluded_image_patterns", [])
+        
         self.query_one("#interval_input").value = str(int(interval_hours))
         self.query_one("#age_input").value = str(age_days)
+        self.query_one("#dry_run_input").value = str(dry_run).lower()
+        self.query_one("#exclusions_input").value = ",".join(exclusions)
 
     @on(Button.Pressed)
     def handle_button_press(self, event: Button.Pressed):
@@ -126,6 +170,10 @@ class DockerJanitorApp(App):
             self.restart_daemon()
         elif event.button.id == "scan_button":
             self.run_scan()
+        elif event.button.id == "dry_run_button":
+            self.run_dry_run_preview()
+        elif event.button.id == "backup_button":
+            self.view_backup()
         elif event.button.id == "delete_button":
             self.delete_images()
 
@@ -134,16 +182,27 @@ class DockerJanitorApp(App):
         try:
             interval_hours = int(self.query_one("#interval_input").value)
             age_days = int(self.query_one("#age_input").value)
+            dry_run_text = self.query_one("#dry_run_input").value.lower()
+            exclusions_text = self.query_one("#exclusions_input").value
 
             if interval_hours <= 0 or age_days <= 0:
                 status.update("[bold red]Values must be positive.[/bold red]")
                 return
+            
+            # Parse dry run setting
+            dry_run = dry_run_text in ['true', 'yes', '1', 'on']
+            
+            # Parse exclusion patterns
+            exclusions = [pattern.strip() for pattern in exclusions_text.split(",") if pattern.strip()]
 
             config.set_config_value("daemon_sleep_interval_seconds", interval_hours * 3600)
             config.set_config_value("image_age_threshold_days", age_days)
+            config.set_config_value("dry_run_mode", dry_run)
+            config.set_config_value("excluded_image_patterns", exclusions)
+            
             status.update("[bold green]Settings saved! Restart the daemon to apply them.[/bold green]")
         except ValueError:
-            status.update("[bold red]Invalid input. Please use numbers only.[/bold red]")
+            status.update("[bold red]Invalid input. Please check your values.[/bold red]")
 
     def restart_daemon(self):
         status = self.query_one("#settings_status")
@@ -165,8 +224,10 @@ class DockerJanitorApp(App):
         
         try:
             client = docker.from_env()
-            age_days = config.get_config_value("image_age_threshold_days")
-            images_to_scan = daemon.get_unused_images(client, age_days)
+            cfg = config.load_config()
+            age_days = cfg.get("image_age_threshold_days", 30)
+            exclusion_patterns = cfg.get("excluded_image_patterns", [])
+            images_to_scan = daemon.get_unused_images(client, age_days, exclusion_patterns)
             
             for image in images_to_scan:
                 tags = ", ".join(image.tags) if image.tags else "[none]"
@@ -175,6 +236,18 @@ class DockerJanitorApp(App):
                 image_table.add_row(image.short_id.replace("sha256:", ""), tags, f"{size_mb:.2f}", created, key=image.id)
         except Exception as e:
             self.query_one("#delete_status").update(f"[bold red]Error scanning images: {e}[/bold red]")
+
+    def run_dry_run_preview(self):
+        """Runs a dry-run preview showing what would be deleted."""
+        status = self.query_one("#delete_status")
+        status.update("Running dry-run preview...")
+        
+        try:
+            # Temporarily run cleanup in dry-run mode
+            daemon.cleanup_images(dry_run=True)
+            status.update("[bold green]Dry-run preview completed. Check logs for details.[/bold green]")
+        except Exception as e:
+            status.update(f"[bold red]Error during dry-run: {e}[/bold red]")
 
 
     @on(DataTable.RowSelected)
@@ -215,6 +288,31 @@ class DockerJanitorApp(App):
             self.run_scan() # Refresh the table
         except docker.errors.DockerException as e:
             status.update(f"[bold red]Docker error: {e}[/bold red]")
+
+    def view_backup(self):
+        """Display the last backup information."""
+        status = self.query_one("#delete_status")
+        cfg = config.load_config()
+        backup_file = cfg.get("backup_file", "/var/lib/docker-janitor/backup.json")
+        
+        try:
+            with open(backup_file, 'r') as f:
+                backup_data = json.load(f)
+            
+            timestamp = backup_data.get("timestamp", "Unknown")
+            images = backup_data.get("images", [])
+            
+            if not images:
+                status.update("[bold yellow]No backup data found.[/bold yellow]")
+                return
+            
+            total_size = sum(img.get("size", 0) for img in images) / (1024 * 1024)
+            status.update(f"[bold green]Last backup: {timestamp} - {len(images)} images ({total_size:.2f} MB)[/bold green]")
+            
+        except FileNotFoundError:
+            status.update("[bold yellow]No backup file found.[/bold yellow]")
+        except Exception as e:
+            status.update(f"[bold red]Error reading backup: {e}[/bold red]")
 
 if __name__ == "__main__":
     app = DockerJanitorApp()
