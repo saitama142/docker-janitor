@@ -327,7 +327,8 @@ main() {
     echo "#!/bin/bash" > "$INSTALL_DIR/launcher.sh"
     echo "# This script activates the venv and runs the main python script." >> "$INSTALL_DIR/launcher.sh"
     echo "source $VENV_DIR/bin/activate" >> "$INSTALL_DIR/launcher.sh"
-    echo "python3 $SRC_DIR/main.py \"\$@\"" >> "$INSTALL_DIR/launcher.sh"
+    echo "cd $SRC_DIR" >> "$INSTALL_DIR/launcher.sh"
+    echo "python3 main.py \"\$@\"" >> "$INSTALL_DIR/launcher.sh"
     chmod +x "$INSTALL_DIR/launcher.sh"
 
     # 10. Create executable symlink

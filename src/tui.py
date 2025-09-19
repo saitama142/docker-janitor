@@ -9,8 +9,13 @@ import os
 import json
 from pathlib import Path
 
-from . import config
-from . import daemon
+# Try relative imports first, fall back to absolute imports
+try:
+    from . import config
+    from . import daemon
+except ImportError:
+    import config
+    import daemon
 
 LOG_FILE = "/var/log/docker-janitor.log"
 

@@ -8,7 +8,11 @@ import json
 import fnmatch
 from pathlib import Path
 
-from . import config
+# Try relative imports first, fall back to absolute imports
+try:
+    from . import config
+except ImportError:
+    import config
 
 def setup_logging():
     """Setup logging with fallback options if main log file is not accessible."""
