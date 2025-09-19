@@ -41,29 +41,86 @@ detect_package_manager() {
     fi
 }
 
+is_package_installed() {
+    local pkg_manager=$1
+    local package=$2
+    
+    case $pkg_manager in
+        "apt")
+            dpkg -l | grep -q "^ii  $package " 2>/dev/null
+            ;;
+        "yum"|"dnf")
+            rpm -q $package >/dev/null 2>&1
+            ;;
+        "pacman")
+            pacman -Q $package >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 install_packages() {
     local pkg_manager=$1
     shift
     local packages="$@"
     
-    case $pkg_manager in
-        "apt")
-            apt update >/dev/null 2>&1
-            apt install -y $packages >/dev/null 2>&1
-            ;;
-        "yum")
-            yum install -y $packages >/dev/null 2>&1
-            ;;
-        "dnf")
-            dnf install -y $packages >/dev/null 2>&1
-            ;;
-        "pacman")
-            pacman -Sy --noconfirm $packages >/dev/null 2>&1
-            ;;
-        *)
-            print_error "Unsupported package manager. Please install dependencies manually: $packages"
-            ;;
-    esac
+    print_info "Checking and installing packages..."
+    
+    # Check which packages are already installed
+    local to_install=""
+    for package in $packages; do
+        if is_package_installed $pkg_manager $package; then
+            print_info "$package is already installed."
+        else
+            to_install="$to_install $package"
+        fi
+    done
+    
+    # Install only packages that aren't already installed
+    if [ -n "$to_install" ]; then
+        print_info "Installing packages:$to_install"
+        
+        case $pkg_manager in
+            "apt")
+                print_info "Updating package list..."
+                if ! apt update; then
+                    print_error "Failed to update package list. Check your internet connection and repository configuration."
+                fi
+                
+                print_info "Installing packages with apt..."
+                if ! apt install -y $to_install; then
+                    print_error "Failed to install packages with apt. Check the error messages above."
+                fi
+                ;;
+            "yum")
+                print_info "Installing packages with yum..."
+                if ! yum install -y $to_install; then
+                    print_error "Failed to install packages with yum. Check the error messages above."
+                fi
+                ;;
+            "dnf")
+                print_info "Installing packages with dnf..."
+                if ! dnf install -y $to_install; then
+                    print_error "Failed to install packages with dnf. Check the error messages above."
+                fi
+                ;;
+            "pacman")
+                print_info "Installing packages with pacman..."
+                if ! pacman -Sy --noconfirm $to_install; then
+                    print_error "Failed to install packages with pacman. Check the error messages above."
+                fi
+                ;;
+            *)
+                print_error "Unsupported package manager. Please install dependencies manually: $to_install"
+                ;;
+        esac
+    else
+        print_info "All required packages are already installed."
+    fi
+    
+    print_success "Package installation completed."
 }
 
 # --- Main Installation Logic ---
@@ -81,6 +138,12 @@ main() {
     echo "• Set up the application and systemd service"
     echo "• Configure proper permissions and logging"
     echo ""
+    
+    # Check internet connectivity
+    print_info "Checking internet connectivity..."
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        print_error "No internet connection detected. Please check your network connection and try again."
+    fi
     
     read -p "Continue with installation? [Y/n] " -n 1 -r
     echo
@@ -113,7 +176,17 @@ main() {
     esac
     
     # Install packages
-    install_packages $PKG_MANAGER $PACKAGES || print_error "Failed to install required packages."
+    install_packages $PKG_MANAGER $PACKAGES
+    
+    # Verify installations
+    print_info "Verifying installations..."
+    if ! command -v python3 >/dev/null 2>&1; then
+        print_error "Python3 installation failed or not found in PATH."
+    fi
+    
+    if ! command -v pip3 >/dev/null 2>&1; then
+        print_error "pip3 installation failed or not found in PATH."
+    fi
     
     print_info "System packages installed successfully."
 
@@ -267,6 +340,13 @@ main() {
     echo ""
     print_info "🚀 You can now run 'docker-janitor' to start the interactive interface!"
     print_info "📚 For help and documentation, see the README.md file."
+    echo ""
+    echo "Troubleshooting:"
+    echo "• If you get permission errors: sudo docker-janitor"
+    echo "• To check service status: sudo systemctl status docker-janitor"
+    echo "• To view logs: sudo journalctl -u docker-janitor -f"
+    echo "• To restart service: sudo systemctl restart docker-janitor"
+}
 }
 
 main "$@"
