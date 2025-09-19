@@ -87,8 +87,9 @@ def should_exclude_image(image, exclusion_patterns):
     if not exclusion_patterns:
         return False
     
-    # Check against image tags
-    for tag in image.tags:
+    # Check against image tags (handle cases where image.tags might be None or empty)
+    tags = image.tags or []
+    for tag in tags:
         for pattern in exclusion_patterns:
             if fnmatch.fnmatch(tag, pattern):
                 return True
@@ -132,7 +133,10 @@ def get_unused_images(client, age_threshold_days: int, exclusion_patterns=None):
         exclusion_patterns = []
         
     try:
-        images = client.images.list(dangling=False)
+        # Get all images (without dangling parameter for compatibility)
+        all_images = client.images.list()
+        # Filter out dangling images manually
+        images = [img for img in all_images if img.tags]  # Only images with tags (non-dangling)
         containers = client.containers.list(all=True)
     except docker.errors.DockerException as e:
         logger.error(f"Failed to connect to Docker daemon: {e}")
