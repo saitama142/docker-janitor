@@ -2,6 +2,9 @@
 
 A smart, interactive CLI tool to manage and clean up unused Docker images with comprehensive safety features.
 
+<img width="2484" height="827" alt="image" src="https://github.com/user-attachments/assets/670c2579-b0e0-40c8-a7d2-fe1b7ea5b4d9" />
+
+
 ## Features
 
 - 🖥️ **Interactive TUI** - Beautiful terminal interface with dashboard, metrics, and progress bars
