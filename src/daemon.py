@@ -92,25 +92,17 @@ def should_exclude_image(image, exclusion_patterns):
     for tag in tags:
         for pattern in exclusion_patterns:
             if fnmatch.fnmatch(tag, pattern):
+                logger.info(f"Excluding image {image.short_id} - tag '{tag}' matches pattern '{pattern}'")
                 return True
     
     # Check against image ID
     for pattern in exclusion_patterns:
         if fnmatch.fnmatch(image.short_id, pattern):
+            logger.info(f"Excluding image {image.short_id} - ID matches pattern '{pattern}'")
             return True
     
-    # Always exclude images with 'latest' tag unless explicitly overridden
-    if any('latest' in tag for tag in tags):
-        logger.debug(f"Excluding image {image.short_id} with 'latest' tag")
-        return True
-    
-    # Exclude images with common production patterns unless explicitly overridden
-    production_patterns = ['prod', 'production', 'stable', 'release']
-    for tag in tags:
-        for prod_pattern in production_patterns:
-            if prod_pattern in tag.lower():
-                logger.debug(f"Excluding image {image.short_id} with production-like tag: {tag}")
-                return True
+    # For now, let's be less aggressive and only exclude 'latest' if explicitly in exclusion patterns
+    # We'll remove the automatic exclusions to see what images we have
     
     return False
 
@@ -149,6 +141,7 @@ def get_unused_images(client, age_threshold_days: int, exclusion_patterns=None):
         # Get ALL images including dangling ones (these are often the biggest space wasters)
         all_images = client.images.list(all=True)
         containers = client.containers.list(all=True)
+        logger.info(f"Found {len(all_images)} total images and {len(containers)} containers")
     except docker.errors.DockerException as e:
         logger.error(f"Failed to connect to Docker daemon: {e}")
         return []
@@ -157,62 +150,70 @@ def get_unused_images(client, age_threshold_days: int, exclusion_patterns=None):
     used_image_ids = set()
     for container in containers:
         used_image_ids.add(container.image.id)
+        logger.debug(f"Container {container.name} ({container.status}) uses image {container.image.short_id}")
         # Also add parent image IDs if available
         if hasattr(container.image, 'parent_id') and container.image.parent_id:
             used_image_ids.add(container.image.parent_id)
 
     unused_images = []
     threshold_date = datetime.now(timezone.utc) - timedelta(days=age_threshold_days)
+    logger.info(f"Using age threshold: {age_threshold_days} days (images older than {threshold_date})")
 
     for image in all_images:
-        # An image is unused if no container is using it
-        if image.id not in used_image_ids:
-            # Check exclusion patterns
-            if should_exclude_image(image, exclusion_patterns):
-                logger.info(f"Excluding image {image.short_id} due to exclusion rules")
-                continue
-                
-            # Docker API returns created time in ISO 8601 format
-            # Handle various timestamp formats from Docker API
-            created_time_str = image.attrs['Created']
-            try:
-                # Try parsing as-is first (most common case)
-                if created_time_str.endswith('Z'):
-                    # Replace Z with +00:00 for proper ISO format
-                    created_time_str = created_time_str.replace('Z', '+00:00')
-                elif '+00:00' in created_time_str and created_time_str.count('+00:00') > 1:
-                    # Fix double timezone issue
-                    created_time_str = created_time_str.replace('+00:00+00:00', '+00:00')
-                
-                # Remove nanoseconds if present (keep only microseconds)
-                if '.' in created_time_str:
-                    date_part, time_part = created_time_str.split('.')
-                    if '+' in time_part:
-                        time_microseconds, tz_part = time_part.split('+', 1)
-                        time_microseconds = time_microseconds[:6]  # Keep only 6 digits (microseconds)
-                        created_time_str = f"{date_part}.{time_microseconds}+{tz_part}"
-                    elif 'Z' in time_part:
-                        time_microseconds = time_part.replace('Z', '')[:6]
-                        created_time_str = f"{date_part}.{time_microseconds}+00:00"
-                
-                created_time = datetime.fromisoformat(created_time_str)
-            except ValueError as e:
-                logger.warning(f"Failed to parse timestamp '{image.attrs['Created']}' for image {image.short_id}: {e}")
-                # Fallback: assume image is new if we can't parse the date
-                continue
-
-            if created_time < threshold_date:
-                unused_images.append(image)
-                
-        # Log information about what we found
         image_tags = image.tags if image.tags else ["<dangling>"]
         size_mb = image.attrs.get('Size', 0) / (1024 * 1024)
+        
+        # Parse creation date
+        created_time_str = image.attrs['Created']
+        try:
+            # Try parsing as-is first (most common case)
+            if created_time_str.endswith('Z'):
+                # Replace Z with +00:00 for proper ISO format
+                created_time_str = created_time_str.replace('Z', '+00:00')
+            elif '+00:00' in created_time_str and created_time_str.count('+00:00') > 1:
+                # Fix double timezone issue
+                created_time_str = created_time_str.replace('+00:00+00:00', '+00:00')
+            
+            # Remove nanoseconds if present (keep only microseconds)
+            if '.' in created_time_str:
+                date_part, time_part = created_time_str.split('.')
+                if '+' in time_part:
+                    time_microseconds, tz_part = time_part.split('+', 1)
+                    time_microseconds = time_microseconds[:6]  # Keep only 6 digits (microseconds)
+                    created_time_str = f"{date_part}.{time_microseconds}+{tz_part}"
+                elif 'Z' in time_part:
+                    time_microseconds = time_part.replace('Z', '')[:6]
+                    created_time_str = f"{date_part}.{time_microseconds}+00:00"
+            
+            created_time = datetime.fromisoformat(created_time_str)
+        except ValueError as e:
+            logger.warning(f"Failed to parse timestamp '{image.attrs['Created']}' for image {image.short_id}: {e}")
+            # Fallback: assume image is new if we can't parse the date
+            continue
+
+        # Check if image is in use
         if image.id in used_image_ids:
-            logger.debug(f"Keeping in-use image {image.short_id} with tags: {image_tags} (Size: {size_mb:.2f} MB)")
-        elif created_time >= threshold_date:
-            logger.debug(f"Keeping recent image {image.short_id} with tags: {image_tags} (Size: {size_mb:.2f} MB)")
+            logger.debug(f"USED: Image {image.short_id} with tags: {image_tags} (Size: {size_mb:.2f} MB, Created: {created_time.strftime('%Y-%m-%d')})")
+            continue
+            
+        # Check exclusion patterns
+        if should_exclude_image(image, exclusion_patterns):
+            logger.info(f"EXCLUDED: Image {image.short_id} with tags: {image_tags} due to exclusion rules")
+            continue
+            
+        # Check age
+        if created_time >= threshold_date:
+            days_old = (datetime.now(timezone.utc) - created_time).days
+            logger.info(f"TOO_NEW: Image {image.short_id} with tags: {image_tags} is only {days_old} days old (Size: {size_mb:.2f} MB)")
+            continue
+            
+        # If we get here, the image is unused and old enough
+        days_old = (datetime.now(timezone.utc) - created_time).days
+        logger.info(f"UNUSED: Image {image.short_id} with tags: {image_tags} is {days_old} days old (Size: {size_mb:.2f} MB)")
+        unused_images.append(image)
 
     logger.info(f"Found {len(unused_images)} unused images out of {len(all_images)} total images")
+    return unused_images
 
     return unused_images
 

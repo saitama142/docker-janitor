@@ -7,10 +7,10 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "daemon_sleep_interval_seconds": 86400,  # 24 hours
-    "image_age_threshold_days": 7,  # More aggressive - clean images older than 7 days
+    "image_age_threshold_days": 1,  # Very aggressive - clean images older than 1 day for testing
     "dry_run_mode": False,
     "excluded_image_patterns": [],  # List of patterns to exclude from deletion
-    "log_level": "INFO",
+    "log_level": "DEBUG",  # More detailed logging for debugging
     "log_file": "/var/log/docker-janitor.log",
     "backup_enabled": True,
     "backup_file": "/var/lib/docker-janitor/backup.json"
