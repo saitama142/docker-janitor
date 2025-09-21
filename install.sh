@@ -331,9 +331,25 @@ main() {
     echo "python3 main.py \"\$@\"" >> "$INSTALL_DIR/launcher.sh"
     chmod +x "$INSTALL_DIR/launcher.sh"
 
-    # 10. Create executable symlink
+    # 10. Create executable symlink and bash completion
     ln -sf "$INSTALL_DIR/launcher.sh" "$EXECUTABLE_PATH" || print_error "Failed to create executable symlink."
     chmod +x "$EXECUTABLE_PATH"
+    
+    # Install bash completion
+    COMPLETION_DIR="/etc/bash_completion.d"
+    if [ -d "$COMPLETION_DIR" ]; then
+        cp "$PWD/docker-janitor-completion.bash" "$COMPLETION_DIR/docker-janitor" 2>/dev/null && \
+            print_info "Bash completion installed. Restart your shell or run: source /etc/bash_completion.d/docker-janitor" || \
+            print_info "Could not install bash completion (non-critical)"
+    else
+        # Try alternative completion directories
+        for alt_dir in "/usr/share/bash-completion/completions" "/usr/local/etc/bash_completion.d"; do
+            if [ -d "$alt_dir" ]; then
+                cp "$PWD/docker-janitor-completion.bash" "$alt_dir/docker-janitor" 2>/dev/null && \
+                    print_info "Bash completion installed in $alt_dir" && break
+            fi
+        done
+    fi
 
     # 11. Set up log file permissions
     touch /var/log/docker-janitor.log 2>/dev/null || print_info "Could not create log file in /var/log (will use fallback location)"

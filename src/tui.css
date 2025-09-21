@@ -10,9 +10,6 @@ Header {
     background: $primary;
     color: $text;
     dock: top;
-}
-
-Header Title {
     text-style: bold;
 }
 
@@ -29,77 +26,194 @@ TabbedContent {
 }
 
 TabPane {
-    padding: 1 2;
+    padding: 1;
 }
 
-/* General Widget Styling */
-.header {
-    background: $primary-lighten-2;
+/* Container Styling */
+Container {
+    padding: 1;
+    height: 100%;
+}
+
+/* Section Headers */
+.section-header {
+    background: $primary-lighten-1;
     color: $text;
     padding: 1;
     text-style: bold;
     text-align: center;
     margin-bottom: 1;
+    border: round $primary;
 }
 
-/* Dashboard Specific */
-#dashboard_content {
-    align: center top;
+/* Dashboard Metrics Grid */
+#metrics_grid {
+    grid-size: 4 2;
+    grid-gutter: 1 1;
+    margin-bottom: 2;
+    height: 8;
 }
 
-#service_status, #last_check, #next_check {
-    margin-bottom: 1;
-}
-
-/* Settings Specific */
-#settings_content {
-    align: center top;
-}
-
-#settings_content Horizontal {
-    height: auto;
-    align: center middle;
-    margin-bottom: 1;
-}
-
-#settings_content .label {
-    width: 30;
-    text-align: right;
-    margin-right: 2;
-}
-
-#settings_content Input {
-    width: 20;
-}
-
-#settings_status {
-    margin-top: 1;
+.metric-title {
+    background: $primary-darken-1;
+    color: $text;
     text-align: center;
+    text-style: bold;
+    padding: 1;
+    border: round $primary;
 }
 
-/* Manual Clean Specific */
-#manual_content {
-    align: center top;
+.metric-value {
+    background: $surface-lighten-1;
+    color: $text;
+    text-align: center;
+    text-style: bold;
+    padding: 1;
+    border: round $secondary;
 }
 
-#scan_button, #delete_button {
+/* Settings Grid */
+#settings_grid {
+    grid-size: 2;
+    grid-gutter: 1 1;
+    margin-bottom: 2;
+}
+
+#settings_grid Label {
+    text-align: right;
+    text-style: bold;
+    padding: 1 0;
+}
+
+#settings_grid Input {
     width: 100%;
+}
+
+#settings_grid Switch {
+    dock: left;
+}
+
+/* Button Rows */
+.button_row {
+    height: auto;
     margin-bottom: 1;
+}
+
+.button_row Button {
+    margin-right: 1;
+}
+
+.bottom_row {
+    height: auto;
+    margin-top: 1;
+}
+
+/* Status Messages */
+.status-message {
+    margin: 1 0;
+    text-align: center;
+    text-style: bold;
+}
+
+.selection-info {
+    text-align: right;
+    text-style: italic;
+    padding: 1;
 }
 
 /* DataTable Styling */
 DataTable {
     background: $surface;
-    border: tall $primary;
+    border: round $primary;
     height: 1fr;
+    margin: 1 0;
 }
 
 DataTable .datatable--header {
     background: $primary-darken-1;
     text-style: bold;
+    color: $text;
 }
 
 DataTable .datatable--cursor {
     background: $secondary;
     color: $text;
+}
+
+DataTable .datatable--hover {
+    background: $secondary-lighten-1;
+}
+
+/* Progress Bar */
+ProgressBar {
+    margin: 1 0;
+    border: round $primary;
+}
+
+/* Input Styling */
+Input {
+    border: round $primary;
+    background: $surface-lighten-1;
+}
+
+Input:focus {
+    border: round $accent;
+}
+
+/* Button Styling */
+Button {
+    margin: 0 1 0 0;
+    text-style: bold;
+}
+
+Button.-primary {
+    background: $primary;
+    color: $text;
+}
+
+Button.-success {
+    background: $success;
+    color: $text;
+}
+
+Button.-warning {
+    background: $warning;
+    color: $text;
+}
+
+Button.-error {
+    background: $error;
+    color: $text;
+}
+
+Button:disabled {
+    opacity: 0.5;
+}
+
+/* Switch Styling */
+Switch {
+    background: $surface-lighten-1;
+    border: round $primary;
+}
+
+Switch.-on {
+    background: $success;
+}
+
+/* Grid Styling */
+Grid {
+    margin: 1 0;
+}
+
+/* Responsive adjustments */
+@media (max-width: 120) {
+    #metrics_grid {
+        grid-size: 2 4;
+        height: 16;
+    }
+    
+    .button_row Button {
+        width: 100%;
+        margin-bottom: 1;
+    }
 }
