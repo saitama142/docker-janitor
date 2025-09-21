@@ -1,10 +1,9 @@
 from textual.app import App, ComposeResult, on
 from textual.widgets import Header, Footer, Static, TabbedContent, TabPane, Input, Button, DataTable, Switch, ProgressBar, Label
-from textual.containers import Vertical, Horizontal, Grid, Container
+from textual.containers import Vertical, Horizontal, Container, ScrollableContainer
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.coordinate import Coordinate
-from textual.message import Message
 import subprocess
 import docker
 import os
@@ -12,6 +11,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import asyncio
+import threading
 
 # Try relative imports first, fall back to absolute imports
 try:
@@ -37,6 +37,8 @@ def get_log_file():
 
 def format_size(bytes_size):
     """Format bytes to human readable string."""
+    if bytes_size is None or bytes_size == 0:
+        return "0 B"
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if bytes_size < 1024.0:
             return f"{bytes_size:.1f} {unit}"
@@ -66,35 +68,128 @@ def format_age(created_str):
     except:
         return created_str
 
-class ScanProgressMessage(Message):
-    """Message sent when scan progress updates."""
-    def __init__(self, current: int, total: int, status: str) -> None:
-        self.current = current
-        self.total = total
-        self.status = status
-        super().__init__()
-
 class DockerJanitorApp(App):
     """The main Textual application for Docker Janitor."""
 
     TITLE = "🐳 Docker Janitor"
     SUB_TITLE = "Your smart Docker image cleaner"
     
-    @property
-    def CSS_PATH(self):
-        """Dynamically resolve CSS path."""
-        # Try to find tui.css in the same directory as this file
-        current_dir = Path(__file__).parent
-        css_file = current_dir / "tui.css"
-        if css_file.exists():
-            return css_file
-        # Fallback to relative path
-        return "tui.css"
+    CSS = """
+    Screen {
+        background: $surface;
+    }
+    
+    Header {
+        background: $primary;
+        color: $text;
+        text-style: bold;
+    }
+    
+    Footer {
+        background: $primary-darken-2;
+        color: $text;
+    }
+    
+    TabbedContent {
+        height: 100%;
+    }
+    
+    TabPane {
+        padding: 1;
+    }
+    
+    .panel {
+        background: $surface-lighten-1;
+        border: round $primary;
+        padding: 1;
+        margin: 1;
+    }
+    
+    .metric-box {
+        background: $primary-darken-1;
+        color: $text;
+        text-align: center;
+        text-style: bold;
+        padding: 1;
+        border: round $secondary;
+        margin: 0 1;
+        height: 3;
+    }
+    
+    .status-good {
+        background: $success;
+        color: $text;
+    }
+    
+    .status-bad {
+        background: $error;
+        color: $text;
+    }
+    
+    .status-warning {
+        background: $warning;
+        color: $text;
+    }
+    
+    Button {
+        margin: 0 1 1 0;
+        text-style: bold;
+    }
+    
+    DataTable {
+        border: round $primary;
+        margin: 1 0;
+    }
+    
+    DataTable .datatable--header {
+        background: $primary-darken-1;
+        text-style: bold;
+    }
+    
+    DataTable .datatable--cursor {
+        background: $secondary;
+    }
+    
+    ProgressBar {
+        margin: 1 0;
+        border: round $primary;
+    }
+    
+    Input {
+        border: round $primary;
+        margin: 0 1 1 0;
+    }
+    
+    #metrics-row {
+        height: 5;
+        margin: 1 0;
+    }
+    
+    #button-row {
+        height: auto;
+        margin: 1 0;
+    }
+    
+    .form-row {
+        height: auto;
+        margin: 1 0;
+    }
+    
+    .form-label {
+        width: 25%;
+        text-align: right;
+        text-style: bold;
+        content-align: center middle;
+    }
+    
+    .form-input {
+        width: 75%;
+    }
+    """
 
     BINDINGS = [
         Binding("q", "quit", "Quit", priority=True),
         Binding("d", "toggle_dark", "Toggle Dark Mode"),
-        Binding("tab", "focus_next", "Switch Pane", show=False),
         Binding("r", "refresh", "Refresh"),
         Binding("s", "scan", "Scan Images"),
         Binding("ctrl+c", "quit", "Quit", priority=True),
@@ -107,68 +202,76 @@ class DockerJanitorApp(App):
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
-        with TabbedContent(id="tabs"):
-            with TabPane("📊 Dashboard", id="dashboard_tab"):
-                yield Container(
-                    Grid(
-                        Static("🔧 Service Status", classes="metric-title"),
-                        Static(id="service_status", classes="metric-value"),
-                        Static("⏰ Next Cleanup", classes="metric-title"), 
-                        Static(id="next_check", classes="metric-value"),
-                        Static("📦 Total Images", classes="metric-title"),
-                        Static(id="total_images", classes="metric-value"),
-                        Static("💾 Space Used", classes="metric-title"),
-                        Static(id="space_used", classes="metric-value"),
-                        id="metrics_grid"
+        with TabbedContent():
+            with TabPane("📊 Dashboard", id="dashboard"):
+                yield ScrollableContainer(
+                    Static("🔧 Service Status & Metrics", classes="panel"),
+                    Horizontal(
+                        Static("Service Status\n[bold green]●[/bold green] Loading...", classes="metric-box", id="service-status"),
+                        Static("Total Images\n[bold blue]?[/bold blue]", classes="metric-box", id="total-images"),
+                        Static("Space Used\n[bold blue]?[/bold blue]", classes="metric-box", id="space-used"),
+                        Static("Next Cleanup\n[bold blue]?[/bold blue]", classes="metric-box", id="next-cleanup"),
+                        id="metrics-row"
                     ),
-                    Static("📋 Recent Activity", classes="section-header"),
-                    DataTable(id="log_table", cursor_type="none", zebra_stripes=True),
-                    Button("🔄 Refresh Dashboard", id="refresh_dashboard", variant="success"),
-                    id="dashboard_content"
+                    Static("📋 Recent Activity", classes="panel"),
+                    DataTable(id="log-table", zebra_stripes=True),
+                    Button("🔄 Refresh Dashboard", id="refresh-dashboard", variant="success"),
+                    id="dashboard-content"
                 )
-            with TabPane("⚙️ Settings", id="settings_tab"):
-                yield Container(
-                    Static("🛠️ Configuration", classes="section-header"),
-                    Grid(
-                        Label("Cleanup Interval (hours):"),
-                        Input(id="interval_input", type="number", placeholder="24"),
-                        Label("Image Age Threshold (days):"),
-                        Input(id="age_input", type="number", placeholder="7"),
-                        Label("Dry Run Mode:"),
-                        Switch(id="dry_run_switch"),
-                        Label("Exclusion Patterns:"),
-                        Input(id="exclusions_input", placeholder="pattern1,pattern2"),
-                        id="settings_grid"
+            
+            with TabPane("⚙️ Settings", id="settings"):
+                yield ScrollableContainer(
+                    Static("🛠️ Configuration", classes="panel"),
+                    Horizontal(
+                        Static("Cleanup Interval (hours):", classes="form-label"),
+                        Input(id="interval-input", type="number", placeholder="24", classes="form-input"),
+                        classes="form-row"
                     ),
                     Horizontal(
-                        Button("💾 Save Settings", id="save_button", variant="primary"),
-                        Button("🔄 Restart Service", id="restart_button", variant="warning"),
-                        Button("🧪 Test Config", id="test_button", variant="default"),
-                        classes="button_row"
+                        Static("Image Age Threshold (days):", classes="form-label"),
+                        Input(id="age-input", type="number", placeholder="3", classes="form-input"),
+                        classes="form-row"
                     ),
-                    Static(id="settings_status", classes="status-message"),
-                    id="settings_content"
+                    Horizontal(
+                        Static("Dry Run Mode:", classes="form-label"),
+                        Switch(id="dry-run-switch", classes="form-input"),
+                        classes="form-row"
+                    ),
+                    Horizontal(
+                        Static("Exclusion Patterns:", classes="form-label"),
+                        Input(id="exclusions-input", placeholder="pattern1,pattern2", classes="form-input"),
+                        classes="form-row"
+                    ),
+                    Horizontal(
+                        Button("💾 Save Settings", id="save-settings", variant="primary"),
+                        Button("🔄 Restart Service", id="restart-service", variant="warning"),
+                        Button("🧪 Test Config", id="test-config", variant="default"),
+                        id="button-row"
+                    ),
+                    Static("Ready to configure...", id="settings-status", classes="panel"),
+                    id="settings-content"
                 )
-            with TabPane("🧹 Manual Clean", id="manual_tab"):
-                yield Container(
-                    Static("🔍 Image Cleanup", classes="section-header"),
+            
+            with TabPane("🧹 Manual Clean", id="manual"):
+                yield ScrollableContainer(
+                    Static("🔍 Image Cleanup Tools", classes="panel"),
                     Horizontal(
-                        Button("🔍 Scan for Unused Images", id="scan_button", variant="primary"),
-                        Button("👁️ Dry Run Preview", id="dry_run_button", variant="default"),
-                        Button("📜 View Backup", id="backup_button", variant="default"),
-                        Button("🗑️ Delete ALL Unused", id="delete_all_button", variant="error"),
-                        classes="button_row"
+                        Button("🔍 Scan for Unused Images", id="scan-images", variant="primary"),
+                        Button("👁️ Dry Run Preview", id="dry-run-preview", variant="default"),
+                        Button("📜 View Backup", id="view-backup", variant="default"),
+                        Button("🗑️ Delete ALL Unused", id="delete-all", variant="error"),
+                        id="button-row"
                     ),
-                    ProgressBar(id="scan_progress", show_eta=False),
-                    Static(id="scan_status", classes="status-message"),
-                    DataTable(id="image_table", cursor_type="row", zebra_stripes=True),
+                    ProgressBar(id="scan-progress", show_eta=False),
+                    Static("Ready to scan...", id="scan-status", classes="panel"),
+                    DataTable(id="image-table", cursor_type="row", zebra_stripes=True),
                     Horizontal(
-                        Button("🗑️ Delete Selected (0)", id="delete_button", variant="error", disabled=True),
-                        Static(id="selection_info", classes="selection-info"),
-                        classes="bottom_row"
+                        Button("🗑️ Delete Selected (0)", id="delete-selected", variant="error", disabled=True),
+                        Static("No images selected", id="selection-info"),
+                        classes="form-row"
                     ),
-                    Static(id="delete_status", classes="status-message"),
-                    id="manual_content"
+                    Static("", id="delete-status", classes="panel"),
+                    id="manual-content"
                 )
         yield Footer()
 
@@ -176,10 +279,11 @@ class DockerJanitorApp(App):
         """Called when the app is mounted."""
         self.update_dashboard()
         self.load_settings()
-        self.set_interval(10, self.update_dashboard)  # Refresh dashboard every 10 seconds
+        self.set_interval(10, self.update_dashboard)
         
         # Hide progress bar initially
-        self.query_one("#scan_progress").display = False
+        progress = self.query_one("#scan-progress")
+        progress.display = False
 
     def action_refresh(self) -> None:
         """Refresh current view."""
@@ -188,125 +292,130 @@ class DockerJanitorApp(App):
     def action_scan(self) -> None:
         """Trigger image scan."""
         current_tab = self.query_one(TabbedContent).active_pane
-        if current_tab and current_tab.id == "manual_tab":
-            self.run_scan_sync()
-
-    def run_scan_sync(self):
-        """Start the async scan process."""
-        self.run_worker(self.run_scan(), exclusive=True)
+        if current_tab and current_tab.id == "manual":
+            self.run_scan()
 
     def update_dashboard(self):
         """Updates the dashboard with current status and logs."""
-        # 1. Update Service Status
         try:
-            result = subprocess.run(["systemctl", "is-active", "docker-janitor.service"], 
-                                  capture_output=True, text=True, timeout=5)
-            status = result.stdout.strip()
-            if status == "active":
-                self.query_one("#service_status").update("[bold green]✅ RUNNING[/bold green]")
-            elif status == "inactive":
-                self.query_one("#service_status").update("[bold yellow]⏸️ STOPPED[/bold yellow]")
-            else:
-                self.query_one("#service_status").update(f"[bold red]❌ {status.upper()}[/bold red]")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            self.query_one("#service_status").update("[bold yellow]❓ UNKNOWN[/bold yellow]")
+            # 1. Update Service Status
+            try:
+                result = subprocess.run(["systemctl", "is-active", "docker-janitor.service"], 
+                                      capture_output=True, text=True, timeout=5)
+                status = result.stdout.strip()
+                if status == "active":
+                    self.query_one("#service-status").update("Service Status\n[bold green]● RUNNING[/bold green]")
+                elif status == "inactive":
+                    self.query_one("#service-status").update("Service Status\n[bold yellow]⏸ STOPPED[/bold yellow]")
+                else:
+                    self.query_one("#service-status").update(f"Service Status\n[bold red]✗ {status.upper()}[/bold red]")
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                self.query_one("#service-status").update("Service Status\n[bold yellow]? UNKNOWN[/bold yellow]")
 
-        # 2. Update Docker Stats
-        try:
-            client = docker.from_env()
-            images = client.images.list(all=True)
-            total_size = sum(img.attrs.get('Size', 0) for img in images)
+            # 2. Update Docker Stats
+            try:
+                client = docker.from_env()
+                images = client.images.list(all=True)
+                total_size = sum(img.attrs.get('Size', 0) for img in images)
+                
+                self.query_one("#total-images").update(f"Total Images\n[bold blue]{len(images)}[/bold blue]")
+                self.query_one("#space-used").update(f"Space Used\n[bold blue]{format_size(total_size)}[/bold blue]")
+            except Exception:
+                self.query_one("#total-images").update("Total Images\n[bold red]Error[/bold red]")
+                self.query_one("#space-used").update("Space Used\n[bold red]Error[/bold red]")
+
+            # 3. Update Next Check Time
+            cfg = config.load_config()
+            interval = cfg.get("daemon_sleep_interval_seconds", 86400)
+            hours = int(interval/3600)
+            self.query_one("#next-cleanup").update(f"Next Cleanup\n[bold blue]{hours}h[/bold blue]")
+
+            # 4. Update Log Table
+            log_table = self.query_one("#log-table")
+            if not log_table.columns:
+                log_table.add_columns("🕐 Time", "📊 Level", "💬 Message")
+            log_table.clear()
             
-            self.query_one("#total_images").update(f"[bold blue]{len(images)}[/bold blue]")
-            self.query_one("#space_used").update(f"[bold blue]{format_size(total_size)}[/bold blue]")
-        except Exception:
-            self.query_one("#total_images").update("[bold red]Error[/bold red]")
-            self.query_one("#space_used").update("[bold red]Error[/bold red]")
-
-        # 3. Update Next Check Time
-        cfg = config.load_config()
-        interval = cfg.get("daemon_sleep_interval_seconds", 86400)
-        hours = int(interval/3600)
-        self.query_one("#next_check").update(f"[bold blue]{hours}h[/bold blue]")
-
-        # 4. Update Log Table
-        log_table = self.query_one("#log_table")
-        if not log_table.columns:
-            log_table.add_columns("🕐 Time", "📊 Level", "💬 Message")
-        log_table.clear()
-        
-        log_file_path = get_log_file()
-        try:
-            with open(log_file_path, "r") as f:
-                lines = f.readlines()
-                for line in lines[-15:]:  # Show last 15 log entries
-                    if " - " in line:
-                        parts = line.strip().split(" - ", 2)
-                        if len(parts) >= 3:
-                            timestamp = parts[0].split()[-1] if parts[0] else ""  # Get time part
-                            level = parts[1]
-                            message = parts[2][:80] + "..." if len(parts[2]) > 80 else parts[2]
-                            
-                            # Color code levels
-                            if "ERROR" in level:
-                                level = f"[red]{level}[/red]"
-                            elif "WARNING" in level:
-                                level = f"[yellow]{level}[/yellow]"
-                            elif "INFO" in level:
-                                level = f"[green]{level}[/green]"
-                            
-                            log_table.add_row(timestamp, level, message)
-        except FileNotFoundError:
-            log_table.add_row("", "[red]ERROR[/red]", f"Log file not found: {log_file_path}")
+            log_file_path = get_log_file()
+            try:
+                with open(log_file_path, "r") as f:
+                    lines = f.readlines()
+                    for line in lines[-15:]:
+                        if " - " in line:
+                            parts = line.strip().split(" - ", 2)
+                            if len(parts) >= 3:
+                                timestamp = parts[0].split()[-1] if parts[0] else ""
+                                level = parts[1]
+                                message = parts[2][:60] + "..." if len(parts[2]) > 60 else parts[2]
+                                
+                                # Color code levels
+                                if "ERROR" in level:
+                                    level = f"[red]{level}[/red]"
+                                elif "WARNING" in level:
+                                    level = f"[yellow]{level}[/yellow]"
+                                elif "INFO" in level:
+                                    level = f"[green]{level}[/green]"
+                                
+                                log_table.add_row(timestamp, level, message)
+            except FileNotFoundError:
+                log_table.add_row("", "[red]ERROR[/red]", f"Log file not found: {log_file_path}")
+        except Exception as e:
+            # Fallback if anything fails
+            pass
 
     def load_settings(self):
         """Loads settings into the input fields."""
-        cfg = config.load_config()
-        interval_hours = cfg.get("daemon_sleep_interval_seconds", 86400) / 3600
-        age_days = cfg.get("image_age_threshold_days", 7)
-        dry_run = cfg.get("dry_run_mode", False)
-        exclusions = cfg.get("excluded_image_patterns", [])
-        
-        self.query_one("#interval_input").value = str(int(interval_hours))
-        self.query_one("#age_input").value = str(age_days)
-        self.query_one("#dry_run_switch").value = dry_run
-        self.query_one("#exclusions_input").value = ",".join(exclusions)
+        try:
+            cfg = config.load_config()
+            interval_hours = cfg.get("daemon_sleep_interval_seconds", 86400) / 3600
+            age_days = cfg.get("image_age_threshold_days", 3)
+            dry_run = cfg.get("dry_run_mode", False)
+            exclusions = cfg.get("excluded_image_patterns", [])
+            
+            self.query_one("#interval-input").value = str(int(interval_hours))
+            self.query_one("#age-input").value = str(age_days)
+            self.query_one("#dry-run-switch").value = dry_run
+            self.query_one("#exclusions-input").value = ",".join(exclusions)
+        except Exception:
+            pass
 
     @on(Button.Pressed)
     def handle_button_press(self, event: Button.Pressed):
         """Handle button press events."""
-        if event.button.id == "save_button":
+        button_id = event.button.id
+        
+        if button_id == "save-settings":
             self.save_settings()
-        elif event.button.id == "restart_button":
-            self.restart_daemon()
-        elif event.button.id == "test_button":
+        elif button_id == "restart-service":
+            self.restart_service()
+        elif button_id == "test-config":
             self.test_config()
-        elif event.button.id == "scan_button":
-            self.run_scan_sync()
-        elif event.button.id == "dry_run_button":
+        elif button_id == "scan-images":
+            self.run_scan()
+        elif button_id == "dry-run-preview":
             self.run_dry_run_preview()
-        elif event.button.id == "backup_button":
+        elif button_id == "view-backup":
             self.view_backup()
-        elif event.button.id == "delete_button":
+        elif button_id == "delete-selected":
             self.delete_selected_images()
-        elif event.button.id == "delete_all_button":
+        elif button_id == "delete-all":
             self.delete_all_unused()
-        elif event.button.id == "refresh_dashboard":
+        elif button_id == "refresh-dashboard":
             self.update_dashboard()
 
     def save_settings(self):
-        status = self.query_one("#settings_status")
+        """Save configuration settings."""
+        status = self.query_one("#settings-status")
         try:
-            interval_hours = int(self.query_one("#interval_input").value or "24")
-            age_days = int(self.query_one("#age_input").value or "7")
-            dry_run = self.query_one("#dry_run_switch").value
-            exclusions_text = self.query_one("#exclusions_input").value
+            interval_hours = int(self.query_one("#interval-input").value or "24")
+            age_days = int(self.query_one("#age-input").value or "3")
+            dry_run = self.query_one("#dry-run-switch").value
+            exclusions_text = self.query_one("#exclusions-input").value
 
             if interval_hours <= 0 or age_days < 0:
                 status.update("[bold red]❌ Values must be positive.[/bold red]")
                 return
             
-            # Parse exclusion patterns
             exclusions = [pattern.strip() for pattern in exclusions_text.split(",") if pattern.strip()]
 
             config.set_config_value("daemon_sleep_interval_seconds", interval_hours * 3600)
@@ -314,48 +423,48 @@ class DockerJanitorApp(App):
             config.set_config_value("dry_run_mode", dry_run)
             config.set_config_value("excluded_image_patterns", exclusions)
             
-            status.update("[bold green]✅ Settings saved! Restart service to apply changes.[/bold green]")
+            status.update("[bold green]✅ Settings saved! Restart service to apply.[/bold green]")
         except ValueError:
-            status.update("[bold red]❌ Invalid input. Please check your values.[/bold red]")
+            status.update("[bold red]❌ Invalid input. Please check values.[/bold red]")
 
     def test_config(self):
-        """Test the configuration without saving."""
-        status = self.query_one("#settings_status")
+        """Test the configuration."""
+        status = self.query_one("#settings-status")
         try:
-            interval_hours = int(self.query_one("#interval_input").value or "24")
-            age_days = int(self.query_one("#age_input").value or "7")
+            interval_hours = int(self.query_one("#interval-input").value or "24")
+            age_days = int(self.query_one("#age-input").value or "3")
             
             if interval_hours <= 0 or age_days < 0:
-                status.update("[bold red]❌ Invalid values detected.[/bold red]")
+                status.update("[bold red]❌ Invalid values.[/bold red]")
                 return
                 
-            # Test Docker connection
             client = docker.from_env()
             client.ping()
             
-            status.update("[bold green]✅ Configuration looks good![/bold green]")
+            status.update("[bold green]✅ Configuration valid![/bold green]")
         except docker.errors.DockerException:
-            status.update("[bold red]❌ Cannot connect to Docker daemon.[/bold red]")
+            status.update("[bold red]❌ Cannot connect to Docker.[/bold red]")
         except ValueError:
             status.update("[bold red]❌ Invalid input values.[/bold red]")
         except Exception as e:
-            status.update(f"[bold red]❌ Error: {str(e)[:50]}[/bold red]")
+            status.update(f"[bold red]❌ Error: {str(e)[:30]}[/bold red]")
 
-    def restart_daemon(self):
-        status = self.query_one("#settings_status")
+    def restart_service(self):
+        """Restart the Docker Janitor service."""
+        status = self.query_one("#settings-status")
         status.update("🔄 Restarting service...")
         try:
             subprocess.run(["sudo", "systemctl", "restart", "docker-janitor.service"], 
                           check=True, timeout=10)
-            status.update("[bold green]✅ Service restarted successfully![/bold green]")
+            status.update("[bold green]✅ Service restarted![/bold green]")
             self.update_dashboard()
         except subprocess.TimeoutExpired:
             status.update("[bold red]❌ Restart timed out.[/bold red]")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            status.update("[bold red]❌ Failed to restart service. Check permissions.[/bold red]")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            status.update("[bold red]❌ Failed to restart service.[/bold red]")
 
-    async def run_scan(self):
-        """Scans for unused images and populates the table."""
+    def run_scan(self):
+        """Scan for unused images."""
         if self.scanning:
             return
             
@@ -363,40 +472,30 @@ class DockerJanitorApp(App):
         self.selected_images.clear()
         
         # Show progress and update UI
-        progress = self.query_one("#scan_progress")
+        progress = self.query_one("#scan-progress")
         progress.display = True
-        progress.update(total=100, progress=0)
+        progress.update(total=100, progress=10)
         
-        scan_status = self.query_one("#scan_status")
-        scan_status.update("🔍 Initializing scan...")
+        scan_status = self.query_one("#scan-status")
+        scan_status.update("🔍 Scanning for unused images...")
         
-        image_table = self.query_one("#image_table")
+        image_table = self.query_one("#image-table")
         image_table.clear()
         if not image_table.columns:
-            image_table.add_columns("✓", "🆔 Image ID", "🏷️ Tags", "💾 Size", "📅 Age", "📊 Status")
+            image_table.add_columns("Select", "🆔 Image ID", "🏷️ Tags", "💾 Size", "📅 Age")
         
         try:
             client = docker.from_env()
             cfg = config.load_config()
-            age_days = cfg.get("image_age_threshold_days", 7)
+            age_days = cfg.get("image_age_threshold_days", 3)
             exclusion_patterns = cfg.get("excluded_image_patterns", [])
             
-            scan_status.update("🔍 Getting image list...")
-            progress.update(progress=20)
-            
+            progress.update(progress=30)
             images_to_scan = daemon.get_unused_images(client, age_days, exclusion_patterns)
-            total_images = len(images_to_scan)
-            
-            if total_images == 0:
-                scan_status.update("✅ No unused images found!")
-                progress.display = False
-                self.scanning = False
-                return
-            
-            scan_status.update(f"📊 Found {total_images} unused images")
+            progress.update(progress=70)
             
             total_size = 0
-            for i, image in enumerate(images_to_scan):
+            for image in images_to_scan:
                 tags = ", ".join(image.tags) if image.tags else "[dangling]"
                 if len(tags) > 40:
                     tags = tags[:37] + "..."
@@ -408,52 +507,39 @@ class DockerJanitorApp(App):
                 created = image.attrs.get('Created', '')
                 age_str = format_age(created)
                 
-                # Determine status based on tags and size
-                if not image.tags:
-                    status = "[yellow]🔸 Dangling[/yellow]"
-                elif size_bytes > 1024**3:  # > 1GB
-                    status = "[red]🔴 Large[/red]"
-                else:
-                    status = "[green]🟢 Safe[/green]"
-                
                 image_table.add_row(
-                    "☐",  # Checkbox placeholder
+                    "☐",
                     image.short_id.replace("sha256:", "")[:12],
                     tags,
                     size_str,
                     age_str,
-                    status,
                     key=image.id
                 )
-                
-                # Update progress
-                progress_val = 20 + int((i + 1) / total_images * 80)
-                progress.update(progress=progress_val)
-                
-                # Allow UI to update
-                await asyncio.sleep(0.01)
             
-            scan_status.update(f"✅ Scan complete: {total_images} unused images ({format_size(total_size)} total)")
+            progress.update(progress=100)
             progress.display = False
             
-            # Update selection info
+            if len(images_to_scan) == 0:
+                scan_status.update("✅ No unused images found!")
+            else:
+                scan_status.update(f"✅ Found {len(images_to_scan)} unused images ({format_size(total_size)} total)")
+            
             self.update_selection_info()
             
         except Exception as e:
-            scan_status.update(f"[bold red]❌ Error during scan: {str(e)[:50]}[/bold red]")
+            scan_status.update(f"[bold red]❌ Error: {str(e)[:40]}[/bold red]")
             progress.display = False
         finally:
             self.scanning = False
 
     def update_selection_info(self):
-        """Update the selection information display."""
-        selection_info = self.query_one("#selection_info")
+        """Update selection information."""
+        selection_info = self.query_one("#selection-info")
         count = len(self.selected_images)
         
         if count == 0:
             selection_info.update("No images selected")
         else:
-            # Calculate total size of selected images
             try:
                 client = docker.from_env()
                 total_size = 0
@@ -468,21 +554,21 @@ class DockerJanitorApp(App):
                 selection_info.update(f"{count} selected")
 
     def run_dry_run_preview(self):
-        """Runs a dry-run preview showing what would be deleted."""
-        status = self.query_one("#delete_status")
+        """Run a dry-run preview."""
+        status = self.query_one("#delete-status")
         status.update("🧪 Running dry-run preview...")
         
         try:
             daemon.cleanup_images(dry_run=True)
-            status.update("[bold green]✅ Dry-run preview completed. Check logs for details.[/bold green]")
-            self.update_dashboard()  # Refresh logs
+            status.update("[bold green]✅ Dry-run completed. Check logs.[/bold green]")
+            self.update_dashboard()
         except Exception as e:
-            status.update(f"[bold red]❌ Error during dry-run: {str(e)[:50]}[/bold red]")
+            status.update(f"[bold red]❌ Error: {str(e)[:40]}[/bold red]")
 
     @on(DataTable.RowSelected)
     def on_image_selected(self, event: DataTable.RowSelected):
         """Toggle selection of an image."""
-        if event.data_table.id != "image_table":
+        if event.data_table.id != "image-table":
             return
             
         image_id = event.row_key.value
@@ -490,24 +576,21 @@ class DockerJanitorApp(App):
         
         if image_id in self.selected_images:
             self.selected_images.remove(image_id)
-            # Update checkbox to empty
             event.data_table.update_cell_at(Coordinate(row_index, 0), "☐")
         else:
             self.selected_images.add(image_id)
-            # Update checkbox to checked
             event.data_table.update_cell_at(Coordinate(row_index, 0), "☑️")
         
-        # Update button label and selection info
         count = len(self.selected_images)
-        delete_button = self.query_one("#delete_button")
+        delete_button = self.query_one("#delete-selected")
         delete_button.disabled = count == 0
         delete_button.label = f"🗑️ Delete Selected ({count})"
         
         self.update_selection_info()
 
     def delete_selected_images(self):
-        """Deletes the selected images."""
-        status = self.query_one("#delete_status")
+        """Delete selected images."""
+        status = self.query_one("#delete-status")
         if not self.selected_images:
             status.update("[bold yellow]⚠️ No images selected.[/bold yellow]")
             return
@@ -528,35 +611,34 @@ class DockerJanitorApp(App):
                     deleted_count += 1
                     deleted_size += size
                 except docker.errors.APIError as e:
-                    status.update(f"[bold red]❌ Error deleting {image_id[:12]}: {str(e)[:30]}[/bold red]")
+                    status.update(f"[bold red]❌ Error deleting image[/bold red]")
                     break
             
             if deleted_count > 0:
-                status.update(f"[bold green]✅ Deleted {deleted_count} images ({format_size(deleted_size)} freed)[/bold green]")
+                status.update(f"[bold green]✅ Deleted {deleted_count} images ({format_size(deleted_size)})[/bold green]")
                 self.selected_images.clear()
-                self.run_scan_sync()  # Refresh the table
-                self.update_dashboard()  # Update stats
+                self.run_scan()
+                self.update_dashboard()
             
         except docker.errors.DockerException as e:
-            status.update(f"[bold red]❌ Docker error: {str(e)[:50]}[/bold red]")
+            status.update(f"[bold red]❌ Docker error[/bold red]")
 
     def delete_all_unused(self):
-        """Delete all unused images without manual selection."""
-        status = self.query_one("#delete_status")
+        """Delete all unused images."""
+        status = self.query_one("#delete-status")
         status.update("🗑️ Deleting ALL unused images...")
         
         try:
-            # Run the actual cleanup
             daemon.cleanup_images(dry_run=False)
-            status.update("[bold green]✅ Cleanup completed! Check logs for details.[/bold green]")
-            self.run_scan_sync()  # Refresh table
-            self.update_dashboard()  # Update stats
+            status.update("[bold green]✅ Cleanup completed![/bold green]")
+            self.run_scan()
+            self.update_dashboard()
         except Exception as e:
-            status.update(f"[bold red]❌ Error during cleanup: {str(e)[:50]}[/bold red]")
+            status.update(f"[bold red]❌ Error: {str(e)[:40]}[/bold red]")
 
     def view_backup(self):
-        """Display the last backup information."""
-        status = self.query_one("#delete_status")
+        """View backup information."""
+        status = self.query_one("#delete-status")
         cfg = config.load_config()
         backup_file = cfg.get("backup_file", "/var/lib/docker-janitor/backup.json")
         
@@ -572,7 +654,6 @@ class DockerJanitorApp(App):
                 return
             
             total_size = sum(img.get("size", 0) for img in images)
-            # Format timestamp nicely
             try:
                 dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                 time_str = dt.strftime("%Y-%m-%d %H:%M")
@@ -584,7 +665,7 @@ class DockerJanitorApp(App):
         except FileNotFoundError:
             status.update("[bold yellow]📋 No backup file found.[/bold yellow]")
         except Exception as e:
-            status.update(f"[bold red]❌ Error reading backup: {str(e)[:50]}[/bold red]")
+            status.update(f"[bold red]❌ Error reading backup[/bold red]")
 
 if __name__ == "__main__":
     app = DockerJanitorApp()
