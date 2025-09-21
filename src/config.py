@@ -7,7 +7,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "daemon_sleep_interval_seconds": 86400,  # 24 hours
-    "image_age_threshold_days": 30,
+    "image_age_threshold_days": 7,  # More aggressive - clean images older than 7 days
     "dry_run_mode": False,
     "excluded_image_patterns": [],  # List of patterns to exclude from deletion
     "log_level": "INFO",

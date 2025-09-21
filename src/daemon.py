@@ -99,6 +99,19 @@ def should_exclude_image(image, exclusion_patterns):
         if fnmatch.fnmatch(image.short_id, pattern):
             return True
     
+    # Always exclude images with 'latest' tag unless explicitly overridden
+    if any('latest' in tag for tag in tags):
+        logger.debug(f"Excluding image {image.short_id} with 'latest' tag")
+        return True
+    
+    # Exclude images with common production patterns unless explicitly overridden
+    production_patterns = ['prod', 'production', 'stable', 'release']
+    for tag in tags:
+        for prod_pattern in production_patterns:
+            if prod_pattern in tag.lower():
+                logger.debug(f"Excluding image {image.short_id} with production-like tag: {tag}")
+                return True
+    
     return False
 
 def backup_image_info(images, backup_file):
@@ -133,21 +146,25 @@ def get_unused_images(client, age_threshold_days: int, exclusion_patterns=None):
         exclusion_patterns = []
         
     try:
-        # Get all images (without dangling parameter for compatibility)
-        all_images = client.images.list()
-        # Filter out dangling images manually
-        images = [img for img in all_images if img.tags]  # Only images with tags (non-dangling)
+        # Get ALL images including dangling ones (these are often the biggest space wasters)
+        all_images = client.images.list(all=True)
         containers = client.containers.list(all=True)
     except docker.errors.DockerException as e:
         logger.error(f"Failed to connect to Docker daemon: {e}")
         return []
 
-    used_image_ids = {container.image.id for container in containers}
-    unused_images = []
+    # Get image IDs that are actually being used by containers
+    used_image_ids = set()
+    for container in containers:
+        used_image_ids.add(container.image.id)
+        # Also add parent image IDs if available
+        if hasattr(container.image, 'parent_id') and container.image.parent_id:
+            used_image_ids.add(container.image.parent_id)
 
+    unused_images = []
     threshold_date = datetime.now(timezone.utc) - timedelta(days=age_threshold_days)
 
-    for image in images:
+    for image in all_images:
         # An image is unused if no container is using it
         if image.id not in used_image_ids:
             # Check exclusion patterns
@@ -186,6 +203,16 @@ def get_unused_images(client, age_threshold_days: int, exclusion_patterns=None):
 
             if created_time < threshold_date:
                 unused_images.append(image)
+                
+        # Log information about what we found
+        image_tags = image.tags if image.tags else ["<dangling>"]
+        size_mb = image.attrs.get('Size', 0) / (1024 * 1024)
+        if image.id in used_image_ids:
+            logger.debug(f"Keeping in-use image {image.short_id} with tags: {image_tags} (Size: {size_mb:.2f} MB)")
+        elif created_time >= threshold_date:
+            logger.debug(f"Keeping recent image {image.short_id} with tags: {image_tags} (Size: {size_mb:.2f} MB)")
+
+    logger.info(f"Found {len(unused_images)} unused images out of {len(all_images)} total images")
 
     return unused_images
 
@@ -227,12 +254,15 @@ def cleanup_images(dry_run=None):
     
     if dry_run:
         logger.info("DRY RUN MODE - No images will actually be deleted:")
+        total_size = 0
         for image in images_to_delete:
-            tags = image.tags if image.tags else ["<none>"]
+            tags = image.tags if image.tags else ["<dangling>"]
             size_mb = image.attrs.get('Size', 0) / (1024 * 1024)
-            logger.info(f"Would delete image {image.short_id} with tags: {tags} (Size: {size_mb:.2f} MB)")
-        total_size = sum(img.attrs.get('Size', 0) for img in images_to_delete) / (1024 * 1024)
-        logger.info(f"Total space that would be freed: {total_size:.2f} MB")
+            total_size += image.attrs.get('Size', 0)
+            created_str = image.attrs.get('Created', 'unknown')
+            logger.info(f"Would delete image {image.short_id} with tags: {tags} (Size: {size_mb:.2f} MB, Created: {created_str})")
+        total_size_mb = total_size / (1024 * 1024)
+        logger.info(f"Total space that would be freed: {total_size_mb:.2f} MB")
         return
 
     # Backup image info before deletion if enabled
@@ -241,9 +271,11 @@ def cleanup_images(dry_run=None):
 
     for image in images_to_delete:
         try:
-            tags = image.tags if image.tags else ["<none>"]
-            logger.info(f"Deleting image {image.short_id} with tags: {tags}")
+            tags = image.tags if image.tags else ["<dangling>"]
+            size_mb = image.attrs.get('Size', 0) / (1024 * 1024)
+            logger.info(f"Deleting image {image.short_id} with tags: {tags} (Size: {size_mb:.2f} MB)")
             client.images.remove(image.id, force=True) # Force to remove even if tagged
+            logger.info(f"Successfully deleted image {image.short_id}")
         except docker.errors.APIError as e:
             logger.error(f"Failed to delete image {image.short_id}: {e}")
 
