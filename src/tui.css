@@ -204,16 +204,3 @@ Switch.-on {
 Grid {
     margin: 1 0;
 }
-
-/* Responsive adjustments */
-@media (max-width: 120) {
-    #metrics_grid {
-        grid-size: 2 4;
-        height: 16;
-    }
-    
-    .button_row Button {
-        width: 100%;
-        margin-bottom: 1;
-    }
-}
