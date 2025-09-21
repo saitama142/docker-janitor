@@ -24,10 +24,15 @@ def load_config() -> dict:
     try:
         with open(CONFIG_FILE, "r") as f:
             config = json.load(f)
-            # Ensure all keys are present
+            # Ensure all keys are present and force update critical settings for debugging
             for key, value in DEFAULT_CONFIG.items():
                 if key not in config:
                     config[key] = value
+                # Force update these settings for debugging
+                if key in ["image_age_threshold_days", "log_level"]:
+                    config[key] = value
+            # Save the updated config back
+            save_config(config)
             return config
     except (json.JSONDecodeError, IOError):
         # If file is corrupted or unreadable, save default and return it

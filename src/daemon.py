@@ -230,6 +230,11 @@ def cleanup_images(dry_run=None):
     if dry_run is None:
         dry_run = cfg.get("dry_run_mode", False)
 
+    # For testing: if in dry-run mode, be very aggressive (0 days) to see what we can find
+    if dry_run:
+        age_threshold = 0
+        logger.info("DRY-RUN MODE: Using 0 days age threshold to show all unused images")
+
     try:
         client = docker.from_env()
         client.ping() # Verify connection
