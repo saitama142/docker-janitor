@@ -4,11 +4,14 @@ A smart, interactive CLI tool to manage and clean up unused Docker images with c
 
 ## Features
 
-- 🖥️ **Interactive TUI** - Beautiful terminal interface inspired by btop
+- 🖥️ **Interactive TUI** - Beautiful terminal interface with dashboard, metrics, and progress bars
 - 🤖 **Automated Daemon** - Background service for continuous cleanup
 - 🔍 **Dry Run Mode** - Preview deletions before executing them
 - 🛡️ **Safety Features** - Image exclusion rules and automatic backups
 - ⚙️ **Configurable** - Flexible settings for intervals, age thresholds, and patterns
+- ⌨️ **Bash Completion** - Auto-complete for `docker-janitor` commands
+- 📊 **Real-time Dashboard** - Service status, image count, space usage monitoring
+- 🎨 **Modern UI** - Emoji icons, color coding, and responsive design
 
 ## Quick Start
 
@@ -37,26 +40,26 @@ Edit `/etc/docker-janitor/config.json`:
 ```json
 {
     "daemon_sleep_interval_seconds": 86400,    // 24 hours
-    "image_age_threshold_days": 30,            // Delete images older than 30 days
+    "image_age_threshold_days": 3,             // Delete images older than 3 days
     "dry_run_mode": false,                     // Set to true for preview-only
     "excluded_image_patterns": ["prod-*", "*important*"],  // Protect images
     "backup_enabled": true                     // Backup image metadata before deletion
 }
 ```
 
-## Safety Features
-
-- **Image Exclusion**: Protect important images using glob patterns
-- **Automatic Backups**: Image metadata saved before deletion
-- **Dry Run Mode**: Test configurations safely
-- **Age Threshold**: Only delete images older than specified days
-
 ## Interface
 
-The TUI includes three main tabs:
-- **Dashboard**: Service status and recent activity logs
-- **Settings**: Configure cleanup intervals and exclusion patterns  
-- **Manual Clean**: Scan and selectively delete images
+The improved TUI includes three main tabs:
+- **📊 Dashboard**: Service status, metrics grid with image count/space usage, and recent activity logs
+- **⚙️ Settings**: Configure cleanup intervals, exclusion patterns, and test configuration  
+- **🧹 Manual Clean**: Scan and selectively delete images with progress tracking and checkboxes
+
+### New Features
+- **Progress bars** for scanning operations
+- **Metrics dashboard** showing total images and space used
+- **Interactive selection** with checkboxes and size calculation
+- **Keyboard shortcuts**: `r` (refresh), `s` (scan), `q` (quit)
+- **Bash completion**: Type `docker-` and hit `Tab` for auto-completion
 
 ## Troubleshooting
 
